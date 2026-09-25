@@ -507,12 +507,85 @@ bicycle-route-search/
 
 案Bでは、画面の明るさ・タッチ操作・防水・バッテリーをスマホが担う。Pi 4 は「**通信なしで地図・経路探索・測位を提供する頭脳**」に徹する。案Aは、案Bで案内の中身が固まってから作る。表示は同じ HTML なので、ソフトはほぼそのまま移せる。
 
-```
-[GYSFDMAXB] → gpsd → 位置の中継（WebSocket） ─┐
-                                               ├→ 画面：MapLibre ＋ 地理院PMTiles ＋ 経路・案内 → 音声・ブザー
-[bicycle-route-search の API（Pi 4 内）]    ─┘
-[Wi-Fi アクセスポイント（内蔵）]  ← スマホ（案B）
-[USB Wi-Fi または LTE（任意）]    → JARTIC 月次更新の取り込み
+#### 構成図（案B、2026-09-25 時点）
+
+実線の枠（緑）はすでにあって動いているもの、点線の枠（黄）は設計だけでまだ作っていないもの。GPS 受信機と gpsd は raspi-gps-logger（Pi Zero W）で動作を確認済みで、Pi 4 にはまだつないでいない。
+
+```mermaid
+flowchart LR
+  %% ===== 入力データ =====
+  subgraph SRC["入力データ（手元にある）"]
+    KSJ["KSJ 道路中心線 N13-24<br/>5338・5339・5438・5439"]
+    CEN1["道路交通センサス R03<br/>箇所別基本表"]
+    CEN2["道路交通センサス R03<br/>時間帯別交通量表"]
+    JAR["JARTIC 交通規制情報<br/>typeD CSV（東京・埼玉）"]
+    N03["N03 行政区域<br/>（都県境）"]
+  end
+
+  %% ===== 前処理（PC） =====
+  subgraph PRE["前処理（PC）：bicycle-route-search/preprocess"]
+    BN["build_network<br/>道路網・安定 ID"]
+    LJ["load_jartic<br/>自転車への適用判定<br/>一方通行の向き"]
+    MT["match<br/>マップマッチング"]
+    AT["attach<br/>交通量・退避のしやすさ r・信号・一時停止"]
+    TU["turns<br/>右左折規制・交差点名"]
+    DS["dataset<br/>links / nodes / turns / manifest"]
+  end
+
+  KSJ --> BN
+  N03 --> BN
+  JAR --> LJ
+  BN --> MT
+  LJ --> MT
+  CEN1 --> MT
+  CEN2 --> AT
+  MT --> AT
+  MT --> TU
+  AT --> DS
+  TU --> DS
+
+  %% ===== 端末本体 =====
+  subgraph PI["Raspberry Pi 4（8GB）・バッグの中"]
+    direction TB
+    AP["Wi-Fi アクセスポイント<br/>hostapd + dnsmasq<br/>SSID: UNVTPortable"]
+    WEB["Web サーバー<br/>Apache / Nginx<br/>192.168.249.1"]
+    TILES[("地図データ<br/>地理院 最適化ベクトルタイル 15.8GB<br/>PLATEAU LOD0 2.9GB<br/>標高タイル 8.7GB")]
+    DSET[("自転車向け道路データセット<br/>links / nodes / turns")]
+    API["経路探索 API<br/>FastAPI + scipy Dijkstra<br/>/route /links"]
+    GPSD["gpsd"]
+    WS["位置の中継<br/>WebSocket"]
+    NET["USB Wi-Fi / LTE<br/>（任意）"]
+  end
+
+  GPS["GPS 受信機<br/>GYSFDMAXB（MTK3339）"] -- "UART" --> GPSD
+  GPSD --> WS
+  TILES --> WEB
+  DSET --> API
+  DS -. "SD カードへ複製" .-> DSET
+
+  %% ===== 画面 =====
+  subgraph PHONE["スマホ・ハンドルに取り付け"]
+    UI["ブラウザ<br/>MapLibre GL JS + PMTiles"]
+    NAV["案内<br/>逸脱検知・再探索<br/>次の曲がる向き・距離・交差点名"]
+    SND["音声 / ブザー<br/>（走行中は画面を注視しない）"]
+  end
+
+  PHONE <-- "Wi-Fi 接続" --> AP
+  WEB -- "地図タイル・スタイル" --> UI
+  API -- "経路・案内情報" --> NAV
+  WS -- "現在地" --> NAV
+  NAV --> UI
+  NAV --> SND
+
+  %% ===== 外部（任意） =====
+  JUP["JARTIC 月次更新<br/>opendata.json"] -. "規制だけ付け直す" .-> NET
+  NET -.-> LJ
+
+  %% ===== 状態の凡例 =====
+  classDef exist fill:#e8f3ea,stroke:#3d8b40,color:#1b3d1e
+  classDef plan fill:#fff7e6,stroke:#c78f00,stroke-dasharray:5 3,color:#4d3800
+  class KSJ,CEN1,CEN2,JAR,N03,AP,WEB,TILES,UI,GPS,GPSD exist
+  class BN,LJ,MT,AT,TU,DS,DSET,API,WS,NET,NAV,SND,JUP plan
 ```
 
 ### 13.3 Pi 4 に載せるもの
